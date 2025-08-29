@@ -1,4 +1,6 @@
 streamlit>=1.33
 pandas
 numpy
-matplotlib
+plotly
+reportlab
+xlsxwriter
