@@ -503,4 +503,4 @@ with exp_col2:
     xls_buf.seek(0)
     st.download_button(tr("xls_btn", lang_choice), data=xls_buf,
                        file_name=f"Cost_{project}.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")p
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
