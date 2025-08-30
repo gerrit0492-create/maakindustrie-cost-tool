@@ -1,0 +1,20 @@
+---
+
+# 7️⃣ `presets/duplex_lasframe.json`
+```json
+{
+  "project": "Duplex_Lasframe",
+  "Q": 50,
+  "material": "1.4462_Duplex",
+  "net_weight": 3.2,
+  "routing": [
+    {"Step":10,"Proces":"Laser","Qty_per_parent":6,"Cycle_min":7,"Setup_min":20,"Attend_pct":50,"kWh_pc":0.6,"QA_min_pc":0.3,"Scrap_pct":0.008,"Parallel_machines":1,"Batch_size":80,"Queue_days":0.5},
+    {"Step":20,"Proces":"Lassen","Qty_per_parent":1,"Cycle_min":18,"Setup_min":20,"Attend_pct":100,"kWh_pc":0.35,"QA_min_pc":0.5,"Scrap_pct":0.015,"Parallel_machines":1,"Batch_size":30,"Queue_days":0.8},
+    {"Step":30,"Proces":"CNC","Qty_per_parent":1,"Cycle_min":6.2,"Setup_min":15,"Attend_pct":100,"kWh_pc":0.22,"QA_min_pc":0.5,"Scrap_pct":0.01,"Parallel_machines":1,"Batch_size":40,"Queue_days":0.4},
+    {"Step":40,"Proces":"Montage","Qty_per_parent":1,"Cycle_min":6.5,"Setup_min":10,"Attend_pct":100,"kWh_pc":0.05,"QA_min_pc":1,"Scrap_pct":0,"Parallel_machines":1,"Batch_size":60,"Queue_days":0.3}
+  ],
+  "bom_buy": [
+    {"Item":"Bevestigingsset RVS","UnitCost_eur":2.40,"Qty_per_parent":1,"Scrap_pct":0}
+  ],
+  "client": {"Company":"Demo BV","Contact":"Inkoper X","Email":"inkoop@demo.nl","Phone":"+31-6-12345678"}
+}
