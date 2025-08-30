@@ -1,5 +1,7 @@
 import io
 import json
+import base64
+import requests
 from math import ceil
 from datetime import date
 import numpy as np
@@ -116,31 +118,24 @@ def tr(key, lang="nl", **fmt):
 # Materialen (incl. ruwe vormen + CO2)
 # =============================
 materials = {
-    # Staal / constructie
     "S235JR_steel":{"price":1.40,"waste":0.08,"k_cycle":1.00,"tool_wear_eur_pc":0.02,"co2e_kgkg":1.9},
     "S355J2_steel":{"price":1.70,"waste":0.08,"k_cycle":1.05,"tool_wear_eur_pc":0.03,"co2e_kgkg":2.0},
     "C45":{"price":1.90,"waste":0.06,"k_cycle":1.10,"tool_wear_eur_pc":0.05,"co2e_kgkg":2.0},
     "42CrMo4":{"price":2.60,"waste":0.06,"k_cycle":1.20,"tool_wear_eur_pc":0.07,"co2e_kgkg":2.3},
-    # RVS
     "SS304":{"price":3.50,"waste":0.06,"k_cycle":1.15,"tool_wear_eur_pc":0.06,"co2e_kgkg":6.5},
     "SS316L":{"price":4.20,"waste":0.06,"k_cycle":1.20,"tool_wear_eur_pc":0.08,"co2e_kgkg":6.8},
     "SS904L":{"price":8.50,"waste":0.06,"k_cycle":1.25,"tool_wear_eur_pc":0.10,"co2e_kgkg":8.5},
-    # Duplex / super duplex
     "1.4462_Duplex":{"price":5.50,"waste":0.07,"k_cycle":1.30,"tool_wear_eur_pc":0.12,"co2e_kgkg":7.5},
     "SuperDuplex_2507":{"price":7.50,"waste":0.07,"k_cycle":1.45,"tool_wear_eur_pc":0.18,"co2e_kgkg":10.5},
-    # Al / Cu
     "Al_6082":{"price":4.20,"waste":0.07,"k_cycle":0.80,"tool_wear_eur_pc":0.01,"co2e_kgkg":8.0},
     "Cast_Aluminium":{"price":3.20,"waste":0.07,"k_cycle":0.90,"tool_wear_eur_pc":0.02,"co2e_kgkg":8.5},
     "Cu_ECW":{"price":8.00,"waste":0.05,"k_cycle":1.10,"tool_wear_eur_pc":0.05,"co2e_kgkg":3.5},
-    # Gietwerk
     "Cast_Steel_GS45":{"price":1.60,"waste":0.05,"yield":0.80,"conv_cost":0.80,"k_cycle":1.10,"tool_wear_eur_pc":0.05,"co2e_kgkg":2.1},
     "Cast_Iron_GG25":{"price":1.20,"waste":0.05,"yield":0.85,"conv_cost":0.60,"k_cycle":1.05,"tool_wear_eur_pc":0.04,"co2e_kgkg":1.8},
     "Cast_AlSi10Mg":{"price":3.00,"waste":0.05,"yield":0.75,"conv_cost":1.00,"k_cycle":0.90,"tool_wear_eur_pc":0.02,"co2e_kgkg":8.5},
-    # Smeedwerk
     "Forged_C45":{"price":1.90,"waste":0.04,"yield":0.90,"conv_cost":1.20,"k_cycle":1.20,"tool_wear_eur_pc":0.06,"co2e_kgkg":2.2},
     "Forged_42CrMo4":{"price":2.80,"waste":0.04,"yield":0.92,"conv_cost":1.40,"k_cycle":1.30,"tool_wear_eur_pc":0.08,"co2e_kgkg":2.5},
     "Forged_1.4462":{"price":6.00,"waste":0.04,"yield":0.88,"conv_cost":1.60,"k_cycle":1.40,"tool_wear_eur_pc":0.12,"co2e_kgkg":8.0},
-    # Extrusie
     "Extruded_Al_6060":{"price":3.50,"waste":0.03,"yield":0.95,"conv_cost":0.50,"k_cycle":0.85,"tool_wear_eur_pc":0.01,"co2e_kgkg":7.5},
     "Extruded_Cu":{"price":7.50,"waste":0.03,"yield":0.92,"conv_cost":0.70,"k_cycle":1.10,"tool_wear_eur_pc":0.05,"co2e_kgkg":3.5},
 }
@@ -151,7 +146,7 @@ labor_rate = 45.0
 overhead_pct = 0.20
 profit_pct = 0.12
 contingency_pct = 0.05
-co2_per_kwh = 0.35  # kg CO2/kWh (simple factor; pas aan op je regio)
+co2_per_kwh = 0.35  # kg CO2/kWh
 
 # =============================
 # Sidebar – Invoer
@@ -216,6 +211,8 @@ quote_month_offset = st.sidebar.slider(tr("month_t", lang_choice), 0, forecast_h
 # =============================
 # Helpers
 # =============================
+def tr_safe(k): return TXT.get(k, {}).get(lang_choice, k)
+
 def lc_factor(Q, ref, b):
     try: return (max(Q,1)/max(ref,1))**b
     except: return 1.0
@@ -232,6 +229,31 @@ def forecast_series(p0, months, method, drift_abs, drift_pct, sigma_pct, seed=42
         nxt=max(0.01, vals[-1]*(mu+shock)); vals.append(nxt)
         trend=vals[-2]*mu; low.append(max(0.01, trend*(1-2*sigma_pct/100))); high.append(trend*(1+2*sigma_pct/100))
     return pd.DataFrame({"Datum":idx,"€/kg":vals,"Low":low,"High":high})
+
+# ---- GitHub helpers (presets uit repo laden, ook private via token in secrets) ----
+@st.cache_data(ttl=300)
+def gh_list_files(owner:str, repo:str, folder:str, branch:str="main", token:str|None=None):
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{folder}"
+    params = {"ref": branch}
+    headers = {"Accept": "application/vnd.github+json"}
+    if token: headers["Authorization"] = f"Bearer {token}"
+    r = requests.get(url, params=params, headers=headers, timeout=20); r.raise_for_status()
+    items = r.json()
+    return [it for it in items if isinstance(it, dict) and it.get("type")=="file" and it.get("name","").lower().endswith(".json")]
+
+@st.cache_data(ttl=300)
+def gh_fetch_json(owner:str, repo:str, path:str, branch:str="main", token:str|None=None):
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    params = {"ref": branch}
+    headers = {"Accept": "application/vnd.github+json"}
+    if token: headers["Authorization"] = f"Bearer {token}"
+    r = requests.get(url, params=params, headers=headers, timeout=20); r.raise_for_status()
+    obj = r.json()
+    if "content" in obj and obj.get("encoding")=="base64":
+        raw = base64.b64decode(obj["content"]); return json.loads(raw.decode("utf-8"))
+    if "download_url" in obj and obj["download_url"]:
+        r2 = requests.get(obj["download_url"], timeout=20); r2.raise_for_status(); return r2.json()
+    raise RuntimeError("Onverwachte GitHub API-respons; geen content gevonden.")
 
 # =============================
 # Forecast bouwen
@@ -390,7 +412,6 @@ def generate_autorouting(pt: str, Q: int, gross_kg_pc: float, holes: int, bends:
 
     return pd.DataFrame(rows).sort_values("Step").reset_index(drop=True)
 
-# knop auto-routing
 if st.button("🔮 Genereer routing"):
     yfac = float(materials[material].get("yield",1.0))
     bruto_kg_pc = gewicht / yfac
@@ -400,7 +421,7 @@ if st.button("🔮 Genereer routing"):
     st.experimental_rerun()
 
 # =============================
-# Preset-bibliotheek + Save/Load JSON
+# Presets & JSON (incl. GitHub loader)
 # =============================
 st.markdown("### 📚 Presets & JSON")
 preset_col1, preset_col2, preset_col3, preset_col4 = st.columns(4)
@@ -440,24 +461,82 @@ with preset_col6:
     if st.button("⭐ Gesmede flens"):
         st.session_state["routing_editor"] = preset_dataframe("Gesmede flens"); st.experimental_rerun()
 
-# JSON save/load
-json_left, json_right = st.columns([0.6,0.4])
+st.divider()
+
+json_left, json_mid, json_right = st.columns([0.34,0.33,0.33])
+
 with json_left:
-    st.caption("Exporteer huidige Routing + BOM + Client + Basisinstellingen als JSON")
-    # Placeholder; filled later once routing/bom exist
-with json_right:
-    uploaded = st.file_uploader("Laad preset JSON", type=["json"])
+    st.caption("⬇️ Exporteer huidige Routing + BOM + Client + Basisinstellingen als JSON")
+    payload = {
+        "project": project, "Q": int(Q), "material": material, "net_weight": gewicht,
+        "routing": st.session_state.get("routing_editor", pd.DataFrame()).to_dict(orient="records") if "routing_editor" in st.session_state else [],
+        "bom_buy": st.session_state.get("bom_buy_editor", pd.DataFrame()).to_dict(orient="records") if "bom_buy_editor" in st.session_state else [],
+        "client": client_info,
+        "settings": {
+            "lc_b": lc_b, "lc_ref": int(lc_ref),
+            "prices_kwh": {"day":price_day,"eve":price_eve,"night":price_night},
+            "tou_share": {"day":float(tou_day),"eve":float(tou_eve),"night":float(tou_night)},
+            "hours_per_day": hours_per_day,
+            "inventory_rate": inventory_cost_year,
+            "co2_per_kwh": co2_per_kwh
+        }
+    }
+    st.download_button("Download preset JSON", data=json.dumps(payload, indent=2),
+                       file_name=f"preset_{project}.json", mime="application/json")
+
+with json_mid:
+    st.caption("📤 Laad preset JSON (upload)")
+    uploaded = st.file_uploader("Kies JSON", type=["json"], key="upload_preset_json")
     if uploaded:
         try:
-            payload = json.load(uploaded)
-            if "routing" in payload:
-                st.session_state["routing_editor"] = pd.DataFrame(payload["routing"])
-            if "bom_buy" in payload:
-                st.session_state["bom_buy_editor"] = pd.DataFrame(payload["bom_buy"])
-            st.success("Preset geladen.")
-            st.experimental_rerun()
+            pl = json.load(uploaded)
+            if "routing" in pl: st.session_state["routing_editor"] = pd.DataFrame(pl["routing"])
+            if "bom_buy" in pl: st.session_state["bom_buy_editor"] = pd.DataFrame(pl["bom_buy"])
+            st.success("Preset geladen vanaf upload."); st.experimental_rerun()
         except Exception as e:
             st.error(f"Kon JSON niet laden: {e}")
+
+with json_right:
+    st.caption("🐙 Laad preset uit GitHub map (ook private met token)")
+    owner_default  = st.secrets.get("PRESET_OWNER", "")
+    repo_default   = st.secrets.get("PRESET_REPO", "")
+    folder_default = st.secrets.get("PRESET_FOLDER", "presets")
+    branch_default = st.secrets.get("PRESET_BRANCH", "main")
+    token_default  = st.secrets.get("GITHUB_TOKEN", "")
+
+    owner  = st.text_input("Owner",  owner_default, placeholder="bijv. gerrit0492-create")
+    repo   = st.text_input("Repo",   repo_default, placeholder="bijv. maakindustrie-cost-tool")
+    folder = st.text_input("Map (folder)", folder_default, placeholder="bijv. presets")
+    branch = st.text_input("Branch", branch_default, placeholder="main")
+    use_token = st.checkbox("Private repo (gebruik token uit secrets)", value=bool(token_default))
+    token = token_default if use_token else None
+
+    list_btn = st.button("Lijst presets ophalen")
+    files = []
+    if list_btn:
+        try:
+            files = gh_list_files(owner, repo, folder, branch, token)
+            if len(files)==0: st.warning("Geen JSON-bestanden gevonden in deze map.")
+            else: st.success(f"Gevonden: {len(files)} bestand(en).")
+        except Exception as e:
+            st.error(f"Kon lijst niet ophalen: {e}")
+    if list_btn and files:
+        st.session_state["gh_files"] = files
+    files = st.session_state.get("gh_files", [])
+
+    if files:
+        names = [f['name'] for f in files]
+        sel = st.selectbox("Kies preset", names, key="gh_sel_name")
+        load_btn = st.button("Preset laden uit GitHub")
+        if load_btn:
+            try:
+                path = f"{folder}/{sel}".strip("/ ")
+                data = gh_fetch_json(owner, repo, path, branch, token)
+                if "routing" in data: st.session_state["routing_editor"] = pd.DataFrame(data["routing"])
+                if "bom_buy" in data: st.session_state["bom_buy_editor"] = pd.DataFrame(data["bom_buy"])
+                st.success(f"Preset '{sel}' geladen uit GitHub."); st.experimental_rerun()
+            except Exception as e:
+                st.error(f"Mislukt: {e}")
 
 # =============================
 # ROUTING (BOM-stappen)
@@ -516,7 +595,7 @@ conv_total = bruto_kg_pc * float(mat.get("conv_cost",0.0)) * Q
 mat_cost_total = base_mat_total + waste_total + conv_total
 mat_value_pc = bruto_kg_pc * mat_price_used * (1+float(mat.get("waste",0.0))) + bruto_kg_pc * float(mat.get("conv_cost",0.0))
 co2e_kgkg = float(mat.get("co2e_kgkg", 0.0))
-co2_total_material = bruto_kg_pc * co2e_kgkg * Q  # materiaal CO2
+co2_total_material = bruto_kg_pc * co2e_kgkg * Q
 co2_per_part_material = co2_total_material / Q if Q else 0.0
 
 # Energieprijs mix & LC
@@ -560,7 +639,6 @@ def compute_costs_routing(routing_df):
         setup_min_total = (batches*setup)/parallel
 
         labor_pc = (cyc/60)*labor_rate*attend*qty_par + (setup/60)*labor_rate*attend/max(batch_size,1)/parallel
-        mach_pc  = (cyc/60)*rate*qry if (qry:=qty_par) else (cyc/60)*rate*qty_par  # tiny guard
         mach_pc  = (cyc/60)*rate*qty_par + (setup/60)*rate/max(batch_size,1)/parallel
         energy_pc = kwh*eff_kwh_price*qty_par
         qa_pc = (qa_min/60)*labor_rate*qty_par
@@ -629,27 +707,6 @@ variable_cost_total = direct_cost
 gross_margin_total = sales_total - variable_cost_total
 shadow_profit_only = (profit / bottleneck_hours) if bottleneck_hours > 0 else 0.0
 shadow_gross_margin = (gross_margin_total / bottleneck_hours) if bottleneck_hours > 0 else 0.0
-
-# =============================
-# JSON export payload nu we alles hebben
-# =============================
-with json_left:
-    payload = {
-        "project": project, "Q": int(Q), "material": material, "net_weight": gewicht,
-        "routing": routing.to_dict(orient="records"),
-        "bom_buy": bom_buy.to_dict(orient="records"),
-        "client": client_info,
-        "settings": {
-            "lc_b": lc_b, "lc_ref": int(lc_ref),
-            "prices_kwh": {"day":price_day,"eve":price_eve,"night":price_night},
-            "tou_share": {"day":float(tou_day),"eve":float(tou_eve),"night":float(tou_night)},
-            "hours_per_day": hours_per_day,
-            "inventory_rate": inventory_cost_year,
-            "co2_per_kwh": co2_per_kwh
-        }
-    }
-    st.download_button("⬇️ Download preset JSON", data=json.dumps(payload, indent=2),
-                       file_name=f"preset_{project}.json", mime="application/json")
 
 # =============================
 # Klant-prioriteiten & advies
@@ -724,8 +781,9 @@ with right:
     st.plotly_chart(fig_wf, use_container_width=True)
 
 # Detail per stap (incl. CO2 energie/stap)
-if res["detail"]:
-    det_df = pd.DataFrame(res["detail"], columns=[
+res_detail = res["detail"]
+if res_detail:
+    det_df = pd.DataFrame(res_detail, columns=[
         "Step","Proces","Qty/parent","Cycle_min_eff","Setup_min","Parallel","Batch_size","Batches","Queue_days",
         "Arbeid €/st","Machine €/st","Energie €/st","QA €/st","Tooling €/st","Scrap-impact €/st","Totaal €/st",
         "Run_min","Setup_min_total","Proc_days","Step_lead_days","CO2_energy_kg/st"
@@ -768,10 +826,9 @@ def quick_eval(mat_key:str):
     conv  = gross * float(m.get("conv_cost",0.0)) * Q
     mat_val_pc = gross * p_used * (1+float(m.get("waste",0.0))) + gross*float(m.get("conv_cost",0.0))
     def eval_rout():
-        if routing.empty: return 0, 0, 0, 0
+        if routing.empty: return 0, 0, 0, {}
         mat_k = m.get("k_cycle",1.0)
         tool_pc = m.get("tool_wear_eur_pc",0.0)
-        hold_rate_day = inventory_cost_year/365.0
         lc = lc_factor(Q, lc_ref, lc_b)
         labor=mach=eng=qa=tool=scrap=wip=0.0; lead=0.0; cap={}
         cum_pc = mat_val_pc + bom_buy_cost_pc
@@ -799,7 +856,7 @@ def quick_eval(mat_key:str):
     direct = (base+waste+conv) + bom_buy_total + proc_cost + transport_cost + storage_cost + wip_cost + rework_cost
     oh = direct*overhead_pct; cg = direct*contingency_pct; cost = direct + oh + cg; prof = cost*profit_pct
     sales = cost + prof
-    co2pp = (gross * float(m.get("co2e_kgkg",0.0)))  # alleen materiaal voor snelle vergelijking
+    co2pp = (gross * float(m.get("co2e_kgkg",0.0)))  # snelle vergelijking: materiaal
     bottleneck = max(cap.items(), key=lambda kv: kv[1])[0] if cap else None
     return dict(Material=mat_key, Price_per_part=sales/Q, Lead_days=lead_days, CO2_per_part=co2pp, Bottleneck=bottleneck or "-")
 
@@ -812,7 +869,7 @@ st.plotly_chart(px.bar(sc_df, x="Material", y="Price_per_part", title="Prijs per
 # Monte-Carlo (optioneel)
 # =============================
 if mc_on:
-    st.subheader(tr("mc_results", lang_choice))
+    st.subheader("Monte Carlo")
     rng=np.random.default_rng(42)
     mat_mul=rng.normal(1.0, sd_mat, size=mc_iter)
     cyc_mul=rng.normal(1.0, sd_cycle, size=mc_iter)
@@ -907,7 +964,7 @@ with exp_col2:
     xls_buf=io.BytesIO()
     with pd.ExcelWriter(xls_buf, engine="xlsxwriter") as xlw:
         split_df.to_excel(xlw, index=False, sheet_name="Cost_Split")
-        if res["detail"]:
+        if res_detail:
             det_df.to_excel(xlw, index=False, sheet_name="Routing")
         if not bom_buy.empty:
             bom_buy.to_excel(xlw, index=False, sheet_name="BOM_Buy")
@@ -918,7 +975,6 @@ with exp_col2:
                  for k,v in res["cap_hours_per_process"].items()]
             ).sort_values("Belasting (h)", ascending=False)
             cap_tab.to_excel(xlw, index=False, sheet_name="Capacity")
-        # Meta
         meta = pd.DataFrame({
             "Key":[
                 "Project","Q","Material","Net_kg_per_part","Gross_kg_per_part","Yield","Conv_cost_per_kg","Waste_frac",
@@ -935,11 +991,8 @@ with exp_col2:
             ]
         })
         meta.to_excel(xlw, index=False, sheet_name="Meta")
-        # Client info tab
         pd.DataFrame(list(client_info.items()), columns=["Field","Value"]).to_excel(xlw, index=False, sheet_name="Client_Info")
-        # Forecast
         df_fc.to_excel(xlw, index=False, sheet_name="Forecast")
-        # Summary_KPIs (PowerBI)
         summary_kpis = pd.DataFrame({
             "KPI":[
                 "Sales_per_part","Sales_total","Lead_time_days","CO2_per_part",
@@ -953,7 +1006,6 @@ with exp_col2:
             ]
         })
         summary_kpis.to_excel(xlw, index=False, sheet_name="Summary_KPIs")
-        # Scenarios
         if len(sc_df) > 0:
             sc_df.to_excel(xlw, index=False, sheet_name="Scenarios")
     xls_buf.seek(0)
