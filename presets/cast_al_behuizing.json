@@ -1,0 +1,15 @@
+{
+  "project": "CastAl_Behuizing",
+  "Q": 120,
+  "material": "Cast_AlSi10Mg",
+  "net_weight": 1.8,
+  "routing": [
+    {"Step":10,"Proces":"Casting","Qty_per_parent":1,"Cycle_min":1.6,"Setup_min":60,"Attend_pct":50,"kWh_pc":0.4,"QA_min_pc":0.2,"Scrap_pct":0.03,"Parallel_machines":1,"Batch_size":60,"Queue_days":1},
+    {"Step":20,"Proces":"CNC","Qty_per_parent":1,"Cycle_min":6.8,"Setup_min":25,"Attend_pct":100,"kWh_pc":0.25,"QA_min_pc":0.6,"Scrap_pct":0.015,"Parallel_machines":1,"Batch_size":40,"Queue_days":0.6},
+    {"Step":30,"Proces":"Montage","Qty_per_parent":1,"Cycle_min":4.5,"Setup_min":8,"Attend_pct":100,"kWh_pc":0.05,"QA_min_pc":0.8,"Scrap_pct":0,"Parallel_machines":1,"Batch_size":80,"Queue_days":0.2}
+  ],
+  "bom_buy": [
+    {"Item":"O-ring set","UnitCost_eur":0.95,"Qty_per_parent":1,"Scrap_pct":0}
+  ],
+  "client": {"Company":"Demo BV","Contact":"Engineer Y","Email":"tech@demo.nl","Phone":"+31-6-22223333"}
+}
