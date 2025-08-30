@@ -116,7 +116,6 @@ labor_rate = 45.0
 overhead_pct = 0.20
 profit_pct = 0.12
 contingency_pct = 0.05
-co2_per_kwh = 0.35  # kg CO2/kWh
 
 # =============================
 # Sidebar – Invoer
@@ -327,7 +326,7 @@ def capacity_table(routing_df: pd.DataFrame, Q: int, hours_per_day: float, cap_p
     return df.sort_values("Util_pct", ascending=False)
 
 # =============================
-# Forecast bouwen
+# Forecast
 # =============================
 mat = materials[material]; p0 = mat["price"]
 df_fc = forecast_series(p0, forecast_horizon, forecast_method, drift_abs, drift_pct, sigma_pct)
@@ -364,21 +363,6 @@ with st.form("client_form"):
         quote_valid = st.text_input("Offertegeldigheid / Quote validity", "60 dagen")
         nda_flag = st.checkbox("NDA van toepassing / NDA applies", value=False)
     st.form_submit_button("Opslaan / Save")
-
-client_info = {
-    "Company": locals().get("client_company",""),
-    "Contact": locals().get("client_contact",""),
-    "Email": locals().get("client_email",""),
-    "Phone": locals().get("client_phone",""),
-    "RFQ": locals().get("rfq_ref",""),
-    "Incoterms": locals().get("incoterms",""),
-    "Currency": locals().get("currency","EUR"),
-    "PaymentTerms": locals().get("pay_terms",""),
-    "DeliveryAddress": locals().get("delivery_addr",""),
-    "RequiredDelivery": locals().get("req_delivery",""),
-    "QuoteValidity": locals().get("quote_valid",""),
-    "NDA": "Yes" if locals().get("nda_flag", False) else "No",
-}
 
 # =============================
 # 🧩 Product specificatie & Auto-routing
@@ -433,17 +417,14 @@ def generate_autorouting(pt: str, gross_kg_pc: float, holes: int, bends: int, we
             "QA_min_pc": max(0.0, qa), "Scrap_pct": max(0.0, min(0.9, scrap)),
             "Parallel_machines": max(1, int(par)), "Batch_size": max(1, int(bsize)), "Queue_days": max(0.0, qd)
         })
-
     if pt == "Gedraaide as / gefreesd deel":
         cyc_cnc = (8.0 * tol_k * surf_k) + 0.4*holes + 2.0*(gross_kg_pc**0.5)
         row(10, "CNC", 1.0, cyc_cnc, 25.0, 100, 0.20, 0.5, scrap_default)
         row(20, "Montage", 1.0, 4.0 + 0.3*holes, 10.0, 100, 0.05, 0.8, 0.0)
-
     elif pt == "Gefreesde beugel (massief)":
         cyc_cnc = (10.0 * tol_k * surf_k) + 0.5*holes + 3.0*(gross_kg_pc**0.6)
         row(10, "CNC", 1.0, cyc_cnc, 30.0, 100, 0.25, 0.6, scrap_default)
         row(20, "Montage", 1.0, 5.0 + 0.3*holes, 10.0, 100, 0.05, 1.0, 0.0)
-
     elif pt == "Lasframe / samenstel":
         cut_time = 3.0 + 0.8 * panels
         row(10, "Laser", panels, cut_time, 20.0, 50, 0.50, 0.3, scrap_default*0.5)
@@ -452,7 +433,6 @@ def generate_autorouting(pt: str, gross_kg_pc: float, holes: int, bends: int, we
         cnc_time = 4.0*tol_k + 0.3*holes + 1.5*(gross_kg_pc**0.4)
         row(30, "CNC", 1.0, cnc_time, 15.0, 100, 0.20, 0.5, 0.01)
         row(40, "Montage", 1.0, 6.0 + 0.3*holes, 10.0, 100, 0.05, 1.0, 0.0)
-
     elif pt == "Plaatwerk kast / bracket":
         laser_time = 3.0 + 0.6 * panels
         row(10, "Laser", panels, laser_time, 20.0, 50, 0.50, 0.3, scrap_default*0.6)
@@ -462,26 +442,22 @@ def generate_autorouting(pt: str, gross_kg_pc: float, holes: int, bends: int, we
         cnc_time = 2.5*tol_k + 0.25*holes
         row(30, "CNC", 1.0, cnc_time, 10.0, 100, 0.15, 0.4, 0.01)
         row(40, "Montage", 1.0, 5.0 + 0.25*holes, 8.0, 100, 0.05, 0.8, 0.0)
-
     elif pt == "Gietstuk behuizing (CNC na-frees)":
         cast_cyc = 1.2 + 0.4*(gross_kg_pc**0.7)
         row(10, "Casting", 1.0, cast_cyc, 60.0, 50, 0.40, 0.2, scrap_default)
         cnc_time = 6.0*tol_k*surf_k + 0.4*holes + 1.5*(gross_kg_pc**0.5)
         row(20, "CNC", 1.0, cnc_time, 25.0, 100, 0.25, 0.6, 0.015)
         row(30, "Montage", 1.0, 4.0 + 0.2*holes, 8.0, 100, 0.05, 0.8, 0.0)
-
     elif pt == "Gesmede flens (CNC na-bewerking)":
         cnc_time = 5.0*tol_k + 0.2*holes + 1.0*(gross_kg_pc**0.5)
         row(10, "CNC", 1.0, cnc_time, 20.0, 100, 0.20, 0.5, scrap_default)
         row(20, "Montage", 1.0, 3.5 + 0.2*holes, 8.0, 100, 0.05, 0.8, 0.0)
-
     return pd.DataFrame(rows).sort_values("Step").reset_index(drop=True)
 
 if st.button("🔮 Genereer routing"):
     yfac = float(materials[material].get("yield", 1.0))
     bruto_kg_pc = gewicht / yfac
-    gen_df = generate_autorouting(part_type, bruto_kg_pc, holes, bends, weld_m, panels, tol_k, surf_k)
-    st.session_state["routing_editor"] = gen_df
+    st.session_state["routing_df"] = generate_autorouting(part_type, bruto_kg_pc, holes, bends, weld_m, panels, tol_k, surf_k)
     st.success("Routing gegenereerd – bewerk ‘m hieronder naar wens.")
     st.rerun()
 
@@ -491,27 +467,42 @@ if st.button("🔮 Genereer routing"):
 st.markdown("## 📂 Presets & JSON")
 st.caption("Bewaar of laad routing/BOM configuraties")
 
+# init defaults in state (data, niet widget)
+if "routing_df" not in st.session_state:
+    st.session_state["routing_df"] = pd.DataFrame([
+        {"Step":10,"Proces":"Casting","Qty_per_parent":1.0,"Cycle_min":2.0,"Setup_min":60.0,"Attend_pct":50,
+         "kWh_pc":0.4,"QA_min_pc":0.2,"Scrap_pct":0.03,"Parallel_machines":1,"Batch_size":50,"Queue_days":1.0},
+        {"Step":20,"Proces":"CNC","Qty_per_parent":1.0,"Cycle_min":7.5,"Setup_min":30.0,"Attend_pct":100,
+         "kWh_pc":0.2,"QA_min_pc":0.5,"Scrap_pct":0.02,"Parallel_machines":1,"Batch_size":50,"Queue_days":0.5},
+        {"Step":30,"Proces":"Montage","Qty_per_parent":1.0,"Cycle_min":6.0,"Setup_min":10.0,"Attend_pct":100,
+         "kWh_pc":0.1,"QA_min_pc":1.0,"Scrap_pct":0.00,"Parallel_machines":1,"Batch_size":50,"Queue_days":0.2},
+    ])
+if "bom_buy_df" not in st.session_state:
+    st.session_state["bom_buy_df"] = pd.DataFrame([
+        {"Part":"Handgreep","Qty":2,"UnitPrice":3.5,"Scrap_pct":0.01},
+        {"Part":"Schroef M8","Qty":8,"UnitPrice":0.1,"Scrap_pct":0.02}
+    ])
+
 preset_col1, preset_col2 = st.columns(2)
 with preset_col1:
     if st.button("💾 Save preset (JSON)"):
         preset = {
-            "routing": pd.DataFrame(st.session_state.get("routing_editor", [])).to_dict(orient="records"),
-            "bom_buy": pd.DataFrame(st.session_state.get("bom_buy_editor", [])).to_dict(orient="records"),
+            "routing": pd.DataFrame(st.session_state["routing_df"]).to_dict(orient="records"),
+            "bom_buy": pd.DataFrame(st.session_state["bom_buy_df"]).to_dict(orient="records"),
         }
         js = json.dumps(preset, indent=2)
         b64 = base64.b64encode(js.encode()).decode()
-        href = f'<a href="data:application/json;base64,{b64}" download="preset.json">Download preset.json</a>'
-        st.markdown(href, unsafe_allow_html=True)
+        st.markdown(f'<a href="data:application/json;base64,{b64}" download="preset.json">Download preset.json</a>',
+                    unsafe_allow_html=True)
 
 with preset_col2:
     uploaded = st.file_uploader("Upload JSON preset", type="json")
     if uploaded:
         try:
             pl = json.load(uploaded)
-            if "routing" in pl: st.session_state["routing_editor"] = pd.DataFrame(pl["routing"])
-            if "bom_buy" in pl: st.session_state["bom_buy_editor"] = pd.DataFrame(pl["bom_buy"])
-            st.success("Preset geladen vanaf upload.")
-            st.rerun()
+            if "routing" in pl: st.session_state["routing_df"] = pd.DataFrame(pl["routing"])
+            if "bom_buy" in pl: st.session_state["bom_buy_df"] = pd.DataFrame(pl["bom_buy"])
+            st.success("Preset geladen vanaf upload."); st.rerun()
         except Exception as e:
             st.error(f"Kon JSON niet laden: {e}")
 
@@ -528,7 +519,6 @@ with st.expander("🔗 GitHub presets laden"):
             st.success(f"Gevonden: {[f['name'] for f in files]}")
         except Exception as e:
             st.error(f"GitHub error: {e}")
-
     files = st.session_state.get("gh_filelist", [])
     if files:
         names = [f['name'] for f in files]
@@ -537,71 +527,53 @@ with st.expander("🔗 GitHub presets laden"):
             try:
                 path = f"{folder}/{sel}".strip("/ ")
                 data = gh_fetch_json(owner, repo, path, branch, token or None)
-                if "routing" in data: st.session_state["routing_editor"] = pd.DataFrame(data["routing"])
-                if "bom_buy" in data: st.session_state["bom_buy_editor"] = pd.DataFrame(data["bom_buy"])
-                st.success(f"Preset '{sel}' geladen uit GitHub.")
-                st.rerun()
+                if "routing" in data: st.session_state["routing_df"] = pd.DataFrame(data["routing"])
+                if "bom_buy" in data: st.session_state["bom_buy_df"] = pd.DataFrame(data["bom_buy"])
+                st.success(f"Preset '{sel}' geladen uit GitHub."); st.rerun()
             except Exception as e:
                 st.error(f"Mislukt: {e}")
 
 # =============================
-# ROUTING (BOM-stappen)
+# ROUTING (BOM-stappen) – editor
 # =============================
 st.markdown(f"## {tr('routing_hdr', lang_choice)}")
 st.caption(tr("routing_cap", lang_choice))
-
 process_choices = list(machine_rates.keys())
-default_routing = pd.DataFrame([
-    {"Step":10,"Proces":"Casting","Qty_per_parent":1.0,"Cycle_min":2.0,"Setup_min":60.0,"Attend_pct":50,
-     "kWh_pc":0.4,"QA_min_pc":0.2,"Scrap_pct":0.03,"Parallel_machines":1,"Batch_size":50,"Queue_days":1.0},
-    {"Step":20,"Proces":"CNC","Qty_per_parent":1.0,"Cycle_min":7.5,"Setup_min":30.0,"Attend_pct":100,
-     "kWh_pc":0.2,"QA_min_pc":0.5,"Scrap_pct":0.02,"Parallel_machines":1,"Batch_size":50,"Queue_days":0.5},
-    {"Step":30,"Proces":"Montage","Qty_per_parent":1.0,"Cycle_min":6.0,"Setup_min":10.0,"Attend_pct":100,
-     "kWh_pc":0.1,"QA_min_pc":1.0,"Scrap_pct":0.00,"Parallel_machines":1,"Batch_size":50,"Queue_days":0.2},
-])
-routing = st.data_editor(
-    default_routing,
-    key="routing_editor",
+routing_view = st.data_editor(
+    pd.DataFrame(st.session_state["routing_df"]),
+    key="routing_editor_widget",
     num_rows="dynamic",
     use_container_width=True,
     column_config={
         "Proces": st.column_config.SelectboxColumn(options=process_choices, required=True),
     }
 )
+# update data (geen widget-key!)
+st.session_state["routing_df"] = pd.DataFrame(routing_view)
 
 # =============================
-# BOM – Ingekochte onderdelen
+# BOM – Ingekochte onderdelen – editor
 # =============================
 st.markdown(f"## {tr('bom_buy_hdr', lang_choice)}")
 st.caption(tr("bom_buy_cap", lang_choice))
-
-default_bom = pd.DataFrame([
-    {"Part":"Handgreep","Qty":2,"UnitPrice":3.5,"Scrap_pct":0.01},
-    {"Part":"Schroef M8","Qty":8,"UnitPrice":0.1,"Scrap_pct":0.02}
-])
-bom_buy = st.data_editor(
-    default_bom,
-    key="bom_buy_editor",
+bom_view = st.data_editor(
+    pd.DataFrame(st.session_state["bom_buy_df"]),
+    key="bom_editor_widget",
     num_rows="dynamic",
     use_container_width=True
 )
-
-# Zorg dat session_state altijd DataFrames bevat (voor export)
-if "routing_editor" not in st.session_state or st.session_state["routing_editor"] is None:
-    st.session_state["routing_editor"] = routing.copy()
-if "bom_buy_editor" not in st.session_state or st.session_state["bom_buy_editor"] is None:
-    st.session_state["bom_buy_editor"] = bom_buy.copy()
+st.session_state["bom_buy_df"] = pd.DataFrame(bom_view)
 
 # =============================
-# Basis kostencalculatie
+# Kostencalculatie
 # =============================
 st.markdown("---")
 st.subheader("📊 Kostencalculatie (basis)")
 st.write(f"Project: **{project}** – {Q} stuks van {material}")
 st.write(f"Gebruikte materiaalprijs: {mat_price_used:.2f} €/kg")
 
-df_routing = pd.DataFrame(st.session_state["routing_editor"])
-df_bom = pd.DataFrame(st.session_state["bom_buy_editor"])
+df_routing = pd.DataFrame(st.session_state["routing_df"])
+df_bom = pd.DataFrame(st.session_state["bom_buy_df"])
 base_res = cost_once(df_routing, df_bom, Q=Q, gewicht=gewicht, mat_price_used=mat_price_used,
                      labor_rate=labor_rate, machine_rates=machine_rates, rework_pct=rework_pct,
                      price_mix=(tou_day,tou_eve,tou_night), kwh_prices=(price_day,price_eve,price_night))
@@ -712,14 +684,11 @@ with exp_col2:
             {"Post":"Totaal","Bedrag":total_cost},
             {"Post":"Verkoop (incl. marge)","Bedrag":sales_price}
         ]).to_excel(writer, index=False, sheet_name="Summary")
-
-        # extra tabs voor MC en Capaciteit
         if isinstance(samples, np.ndarray):
             pd.DataFrame({"Kostprijs/stuk": samples}).to_excel(writer, index=False, sheet_name="MC_samples")
             pd.DataFrame([{"P50":p50,"P80":p80,"P95":p95}]).to_excel(writer, index=False, sheet_name="MC_stats")
         if not cap_df.empty:
             cap_show.to_excel(writer, index=False, sheet_name="Capacity")
-
     out_buf.seek(0)
     st.download_button("📊 Download Excel",
                        data=out_buf,
