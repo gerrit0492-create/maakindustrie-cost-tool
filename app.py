@@ -1020,3 +1020,17 @@ with exp_col2:
     st.download_button("📊 Download Excel", data=xls_buf,
                        file_name=f"Cost_{project}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        summary_kpis.to_excel(xlw, index=False, sheet_name="Summary_KPIs")
+
+        # Scenarios
+        if len(sc_df) > 0:
+            sc_df.to_excel(xlw, index=False, sheet_name="Scenarios")
+
+    # <<== dit is regel 1023 in jouw bestand ==>>
+    xls_buf.seek(0)
+    st.download_button(
+        "📊 Download Excel",
+        data=xls_buf,
+        file_name=f"Cost_{project}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
