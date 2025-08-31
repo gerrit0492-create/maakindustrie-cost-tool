@@ -1,3 +1,7 @@
+import os, sys
+print(">>> sys.path:", sys.path)
+print(">>> files in root:", os.listdir("."))
+print(">>> files in utils:", os.listdir("utils"))
 import io, streamlit as st, pandas as pd, plotly.express as px, plotly.graph_objects as go
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
