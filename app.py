@@ -67,50 +67,102 @@ PROFIT_PCT = 0.12
 CONTINGENCY_PCT = 0.05
 
 # ========================================
-# Util
+# Utils
 # ========================================
 def eurton_to_eurkg(value_eur_per_ton: float) -> float:
     return (value_eur_per_ton or 0.0) / 1000.0
+
+def parse_eur_number(s: str) -> Optional[float]:
+    """Parse '2.238,00' / '2,238' / '2 238' / '2238' → float 2238.0 (€/ton)."""
+    if s is None:
+        return None
+    s = (s.replace("\xa0", " ").strip())
+    m = re.search(r"([0-9][0-9\.\,\s]*)", s)
+    if not m:
+        return None
+    num = m.group(1).replace(" ", "")
+    if "," in num and "." in num:
+        last = max(num.rfind(","), num.rfind("."))
+        dec = num[last]
+        thou = "." if dec == "," else ","
+        num = num.replace(thou, "")
+        num = num.replace(dec, ".")
+    elif "," in num:
+        parts = num.split(",")
+        if len(parts[-1]) in (1, 2):
+            num = num.replace(".", "")
+            num = num.replace(",", ".")
+        else:
+            num = num.replace(",", "")
+    else:
+        parts = num.split(".")
+        if len(parts) > 2:
+            num = num.replace(".", "")
+    try:
+        return float(num)
+    except:
+        return None
 
 # ========================================
 # Scrapers – Outokumpu (€/ton)
 # ========================================
 def fetch_outokumpu_surcharge_eur_ton(timeout=12) -> Dict[str, float]:
     """
-    Best-effort parse van Outokumpu 'Surcharges' pagina.
-    Retourneert dict: {'304': 2238.0, '316L': 3693.0, ...} in €/ton als gevonden.
-    Site-HTML kan wijzigen; dan valt de app terug op handmatige invoer.
+    Zoek eerst in tabelrijen naar 304/316L/2205/2507/904L en een €-waarde in dezelfde rij (€/ton).
+    Valt terug op regex over hele pagina. Retourneert bijv. {'2205': 2238.0}.
     """
     url = "https://www.outokumpu.com/en/surcharges"
     r = requests.get(url, headers=HEADERS, timeout=timeout)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "lxml")
-    text = soup.get_text(" ", strip=True)
 
-    def grab(pattern: str) -> Optional[float]:
-        m = re.search(pattern, text, flags=re.IGNORECASE)
-        if not m:
-            return None
-        raw = m.group(1).strip()
-        # "2.238" of "2,238" → "2238"
-        raw = raw.replace(".", "").replace(",", "")
-        try:
-            return float(raw)
-        except:
-            return None
-
-    patterns = {
-        "304":  r"(?:304|1\.4301)[^\d€]{0,40}€\s?([\d\.\,]+)\s*(?:/t|/ton|per ton)",
-        "316L": r"(?:316L|1\.4404)[^\d€]{0,40}€\s?([\d\.\,]+)\s*(?:/t|/ton|per ton)",
-        "2205": r"(?:2205|1\.4462)[^\d€]{0,40}€\s?([\d\.\,]+)\s*(?:/t|/ton|per ton)",
-        "2507": r"(?:2507|1\.4410)[^\d€]{0,40}€\s?([\d\.\,]+)\s*(?:/t|/ton|per ton)",
-        "904L": r"(?:904L|1\.4539)[^\d€]{0,40}€\s?([\d\.\,]+)\s*(?:/t|/ton|per ton)",
+    grade_aliases = {
+        "304":  ["304", "1.4301"],
+        "316L": ["316l", "1.4404"],
+        "2205": ["2205", "1.4462", "duplex 2205"],
+        "2507": ["2507", "1.4410", "super duplex"],
+        "904L": ["904l", "1.4539"],
     }
+
     out: Dict[str, float] = {}
-    for g, pat in patterns.items():
-        v = grab(pat)
-        if v:
-            out[g] = v
+
+    # Pass 1: tabel-rijen
+    for tr in soup.find_all("tr"):
+        cells = tr.find_all(["th", "td"])
+        if not cells:
+            continue
+        row_txt = " ".join(td.get_text(" ", strip=True) for td in cells)
+        row_low = row_txt.lower()
+        for key, aliases in grade_aliases.items():
+            if any(a in row_low for a in aliases):
+                euros = re.findall(r"€\s*([0-9\.\,\s]+)", row_txt)
+                if not euros:
+                    euros = re.findall(r"([0-9\.\,\s]+)\s*(?:€/t|€/ton|per ton)", row_txt, flags=re.IGNORECASE)
+                vals = []
+                for e in euros:
+                    v = parse_eur_number(e)
+                    if v is not None:
+                        vals.append(v)
+                if vals:
+                    out[key] = max(vals)
+
+    # Pass 2: regex over hele pagina
+    if not out:
+        text = soup.get_text(" ", strip=True)
+        patterns = {
+            "304":  r"(?:304|1\.4301)[^\d€]{0,40}€\s*([0-9\.\, \u00A0]+)\s*(?:/t|/ton|per ton)",
+            "316L": r"(?:316L|1\.4404)[^\d€]{0,40}€\s*([0-9\.\, \u00A0]+)\s*(?:/t|/ton|per ton)",
+            "2205": r"(?:2205|1\.4462)[^\d€]{0,40}€\s*([0-9\.\, \u00A0]+)\s*(?:/t|/ton|per ton)",
+            "2507": r"(?:2507|1\.4410)[^\d€]{0,40}€\s*([0-9\.\, \u00A0]+)\s*(?:/t|/ton|per ton)",
+            "904L": r"(?:904L|1\.4539)[^\d€]{0,40}€\s*([0-9\.\, \u00A0]+)\s*(?:/t|/ton|per ton)",
+        }
+        for k, pat in patterns.items():
+            m = re.search(pat, text, flags=re.IGNORECASE)
+            if m:
+                v = parse_eur_number(m.group(1))
+                if v is not None:
+                    out[k] = v
+
     return out
 
 # ========================================
@@ -192,6 +244,9 @@ Q = st.sidebar.number_input("Aantal stuks (Q)", min_value=1, value=50, step=1)
 materiaal = st.sidebar.selectbox("Materiaal", list(MATERIALS.keys()))
 net_kg = st.sidebar.number_input("Netto gewicht per stuk (kg)", min_value=0.01, value=2.0)
 
+# Debug toggle
+debug_otk = st.sidebar.checkbox("🧪 Debug Outokumpu parsing", value=False)
+
 # RVS – OTK surcharge
 st.sidebar.subheader("RVS – Outokumpu alloy surcharge (€/ton)")
 otk_mode = st.sidebar.radio("Bron", ["Automatisch (scrape)", "Handmatig"], horizontal=True, key="otk_mode")
@@ -234,17 +289,31 @@ def get_stainless_price_eurkg(grade_key: str) -> Tuple[float, str]:
     if otk_mode == "Automatisch (scrape)":
         try:
             data = fetch_outokumpu_surcharge_eur_ton()
+            if debug_otk:
+                st.sidebar.caption(f"OTK raw: {data}")
             if data and grade_key in data:
-                surcharge_eurkg = eurton_to_eurkg(data[grade_key])
+                eur_ton = data[grade_key]
+                surcharge_eurkg = eurton_to_eurkg(eur_ton)
                 source = "OTK: scraped (€/ton)"
             else:
-                surcharge_eurkg = eurton_to_eurkg(manual_otk_eur_ton)
+                eur_ton = manual_otk_eur_ton
+                surcharge_eurkg = eurton_to_eurkg(eur_ton)
                 source = "OTK: fallback handmatig (€/ton)"
-        except Exception:
-            surcharge_eurkg = eurton_to_eurkg(manual_otk_eur_ton)
+        except Exception as e:
+            if debug_otk:
+                st.sidebar.warning(f"OTK scrape error: {e}")
+            eur_ton = manual_otk_eur_ton
+            surcharge_eurkg = eurton_to_eurkg(eur_ton)
             source = "OTK: fallback handmatig (€/ton)"
     else:
-        surcharge_eurkg = eurton_to_eurkg(manual_otk_eur_ton)
+        eur_ton = manual_otk_eur_ton
+        surcharge_eurkg = eurton_to_eurkg(eur_ton)
+
+    # sanity check – surcharge hoort ~1–6 €/kg, zeker < 20 €/kg
+    if surcharge_eurkg > 20:
+        st.sidebar.error(f"Verdachte OTK surcharge: {surcharge_eurkg:.2f} €/kg (check notatie op de site).")
+    if debug_otk:
+        st.sidebar.caption(f"Parsed: {eur_ton:.0f} €/ton → {surcharge_eurkg:.3f} €/kg")
 
     return base + surcharge_eurkg, source
 
@@ -475,7 +544,7 @@ with st.expander("🔗 GitHub presets laden / aanmaken"):
         except Exception as e:
             st.error(f"Push mislukt: {e}")
 
-# Auto-routing (optioneel)
+# Auto-routing
 st.markdown("## 🧩 Auto-routing")
 part_type = st.selectbox("Type product", [
     "Gedraaide as / gefreesd deel",
@@ -678,7 +747,7 @@ c3.metric("Inkoopdelen totaal", f"€ {res['buy_total']:.2f}")
 c4.metric("Kostprijs/stuk", f"€ {res['total_pc']:.2f}")
 
 fig = go.Figure(go.Pie(labels=["Materiaal","Conversie","Inkoopdelen"],
-                       values=[res["mat_pc"], res["conv_total"], res["buy_total"]]))
+                       values=[res['mat_pc'], res['conv_total'], res['buy_total']]))
 st.plotly_chart(fig, use_container_width=True)
 
 # Monte-Carlo
@@ -778,11 +847,14 @@ with pd.ExcelWriter(out_buf, engine="xlsxwriter") as writer:
         {"Post":"Totaal","Bedrag":res["total_pc"]},
         {"Post":"Verkoop (incl. marge+cont.)","Bedrag":res["total_pc"]*(1+PROFIT_PCT+CONTINGENCY_PCT)}
     ]).to_excel(writer, index=False, sheet_name="Summary")
-    if isinstance(mc_on, bool) and mc_on:
-        samples_df = pd.DataFrame({"Kostprijs/stuk": run_mc(st.session_state["routing_df"], st.session_state["bom_buy_df"],
-                                                            Q, net_kg, price_eurkg, sd_mat, sd_cycle, sd_scrap,
-                                                            LABOR_RATE, MACHINE_RATES, iters=mc_iter, seed=123)})
-        samples_df.to_excel(writer, index=False, sheet_name="MC_samples")
+    if mc_on:
+        samples = run_mc(st.session_state["routing_df"], st.session_state["bom_buy_df"],
+                         Q, net_kg, price_eurkg, sd_mat, sd_cycle, sd_scrap,
+                         LABOR_RATE, MACHINE_RATES, iters=mc_iter, seed=123)
+        pd.DataFrame({"Kostprijs/stuk": samples}).to_excel(writer, index=False, sheet_name="MC_samples")
+        pd.DataFrame([{"P50":float(np.percentile(samples,50)),
+                       "P80":float(np.percentile(samples,80)),
+                       "P95":float(np.percentile(samples,95))}]).to_excel(writer, index=False, sheet_name="MC_stats")
     cap_x = capacity_table(st.session_state["routing_df"], Q, hours_per_day, cap_per_process)
     if not cap_x.empty:
         cap_x.to_excel(writer, index=False, sheet_name="Capacity")
@@ -790,4 +862,4 @@ out_buf.seek(0)
 st.download_button("⬇️ Download Excel", out_buf.getvalue(), f"{project}_calc.xlsx",
                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.markdown("✅ Gereed – dynamische materiaalprijzen (Outokumpu + LME) geïntegreerd met je volledige kostentool.")
+st.markdown("✅ Gereed – dynamische materiaalprijzen (Outokumpu + LME) geïntegreerd + Outokumpu-decimaalfix voor 1.4462/2205.")
