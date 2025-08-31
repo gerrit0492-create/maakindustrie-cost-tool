@@ -1,3 +1,10 @@
+# --- robust path fix (bovenaan bestand, vóór overige imports) ---
+import sys, os
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+# nu kan: from utils.shared import *
+from utils.shared import *
 import io, streamlit as st, pandas as pd, plotly.express as px, plotly.graph_objects as go
 from utils.shared import *
 
