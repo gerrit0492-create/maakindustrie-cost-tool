@@ -3,6 +3,8 @@ import json
 import base64
 import requests
 from datetime import date
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -73,12 +75,7 @@ TXT = {
                    "en":"Purchase items per finished unit; scrap cascades in routing."},
     "client_hdr":{"nl":"👤 Klantinformatie","en":"👤 Client information"},
     "client_cap":{"nl":"Komt op PDF/Excel; vul in voor complete offerte.",
-                  "en":"Goes on PDF/Excel; fill for a complete quote."},
-    "verkoop_stuk":{"nl":"Verkoopprijs/stuk","en":"Sales price/part"},
-    "verkoop_totaal":{"nl":"Totale verkoopprijs","en":"Total sales price"},
-    "advies":{"nl":"Advies","en":"Recommendation"},
-    "used_price":{"nl":"Gebruikte materiaalprijs","en":"Material price used"},
-    "month":{"nl":"maand","en":"month"}
+                  "en":"Goes on PDF/Excel; fill for a complete quote."}
 }
 def tr(key, lang="nl", **fmt):
     s = TXT.get(key, {}).get(lang, key)
@@ -113,7 +110,6 @@ materials = {
 # Tarieven (€/uur) en algemeen
 machine_rates = {"CNC":85.0,"Laser":110.0,"Lassen":55.0,"Buigen":75.0,"Montage":40.0,"Casting":65.0}
 labor_rate = 45.0
-overhead_pct = 0.20
 profit_pct = 0.12
 contingency_pct = 0.05
 
@@ -193,29 +189,86 @@ def forecast_series(p0, months, method, drift_abs, drift_pct, sigma_pct, seed=42
         trend=vals[-2]*mu; low.append(max(0.01, trend*(1-2*sigma_pct/100))); high.append(trend*(1+2*sigma_pct/100))
     return pd.DataFrame({"Datum":idx,"€/kg":vals,"Low":low,"High":high})
 
-@st.cache_data(ttl=300)
-def gh_list_files(owner:str, repo:str, folder:str, branch:str="main", token:str|None=None):
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{folder}"
-    params = {"ref": branch}
-    headers = {"Accept": "application/vnd.github+json"}
-    if token: headers["Authorization"] = f"Bearer {token}"
-    r = requests.get(url, params=params, headers=headers, timeout=20); r.raise_for_status()
-    items = r.json()
-    return [it for it in items if isinstance(it, dict) and it.get("type")=="file" and it.get("name","").lower().endswith(".json")]
+# --------- GitHub helpers robuust ---------
+def gh_get_default_branch(owner:str, repo:str, token:Optional[str]=None):
+    url = f"https://api.github.com/repos/{owner}/{repo}"
+    headers = {"Accept":"application/vnd.github+json"}
+    if token: headers["Authorization"]=f"Bearer {token}"
+    r = requests.get(url, headers=headers, timeout=20)
+    if r.status_code==404:
+        raise FileNotFoundError(f"Repo '{owner}/{repo}' niet gevonden of geen toegang.")
+    r.raise_for_status()
+    return r.json().get("default_branch","main")
 
 @st.cache_data(ttl=300)
-def gh_fetch_json(owner:str, repo:str, path:str, branch:str="main", token:str|None=None):
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-    params = {"ref": branch}
-    headers = {"Accept": "application/vnd.github+json"}
-    if token: headers["Authorization"] = f"Bearer {token}"
-    r = requests.get(url, params=params, headers=headers, timeout=20); r.raise_for_status()
-    obj = r.json()
-    if "content" in obj and obj.get("encoding")=="base64":
-        raw = base64.b64decode(obj["content"]); return json.loads(raw.decode("utf-8"))
-    if "download_url" in obj and obj["download_url"]:
-        r2 = requests.get(obj["download_url"], timeout=20); r2.raise_for_status(); return r2.json()
-    raise RuntimeError("Onverwachte GitHub API-respons; geen content gevonden.")
+def gh_list_files(owner:str, repo:str, folder:str, branch:Optional[str]=None, token:Optional[str]=None):
+    if not branch:
+        branch = gh_get_default_branch(owner, repo, token)
+    headers = {"Accept":"application/vnd.github+json"}
+    if token: headers["Authorization"]=f"Bearer {token}"
+
+    def _list(br):
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{folder.strip('/')}"
+        r = requests.get(url, params={"ref": br}, headers=headers, timeout=20)
+        r.raise_for_status()
+        return r.json()
+
+    try:
+        items = _list(branch)
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code==404 and branch!="master":
+            items = _list("master")
+            branch = "master"
+        else:
+            raise
+
+    files = [it for it in items
+             if isinstance(it, dict) and it.get("type")=="file" and it.get("name","").lower().endswith(".json")]
+    return files, branch
+
+@st.cache_data(ttl=300)
+def gh_fetch_json(owner:str, repo:str, path:str, branch:Optional[str]=None, token:Optional[str]=None):
+    if not branch:
+        branch = gh_get_default_branch(owner, repo, token)
+    headers = {"Accept":"application/vnd.github+json"}
+    if token: headers["Authorization"]=f"Bearer {token}"
+
+    def _fetch(br):
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path.strip('/')}"
+        r = requests.get(url, params={"ref": br}, headers=headers, timeout=20)
+        r.raise_for_status()
+        obj = r.json()
+        if "content" in obj and obj.get("encoding")=="base64":
+            raw = base64.b64decode(obj["content"])
+            return json.loads(raw.decode("utf-8")), br
+        if "download_url" in obj and obj["download_url"]:
+            r2 = requests.get(obj["download_url"], timeout=20); r2.raise_for_status()
+            return r2.json(), br
+        raise RuntimeError("Onverwachte GitHub API-respons; geen content gevonden.")
+
+    try:
+        data, used = _fetch(branch)
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code==404 and branch!="master":
+            data, used = _fetch("master")
+        else:
+            raise
+    return data
+
+def gh_put_file(owner:str, repo:str, branch:Optional[str], path:str, content_bytes:bytes, message:str, token:str):
+    if not token:
+        raise PermissionError("Token met 'repo' scope vereist voor schrijven.")
+    if not branch:
+        branch = gh_get_default_branch(owner, repo, token)
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path.strip('/')}"
+    headers = {"Accept":"application/vnd.github+json", "Authorization":f"Bearer {token}"}
+    b64 = base64.b64encode(content_bytes).decode()
+    payload = {"message": message, "content": b64, "branch": branch}
+    r = requests.put(url, headers=headers, json=payload, timeout=20)
+    if r.status_code==404:
+        raise FileNotFoundError("Pad of repo niet gevonden (controleer owner/repo/branch).")
+    r.raise_for_status()
+    return r.json()
 
 # ---------- scrap-propagatie & 1-run kost ----------
 def propagate_scrap(df: pd.DataFrame, Q: int):
@@ -454,20 +507,9 @@ def generate_autorouting(pt: str, gross_kg_pc: float, holes: int, bends: int, we
         row(20, "Montage", 1.0, 3.5 + 0.2*holes, 8.0, 100, 0.05, 0.8, 0.0)
     return pd.DataFrame(rows).sort_values("Step").reset_index(drop=True)
 
-if st.button("🔮 Genereer routing"):
-    yfac = float(materials[material].get("yield", 1.0))
-    bruto_kg_pc = gewicht / yfac
-    st.session_state["routing_df"] = generate_autorouting(part_type, bruto_kg_pc, holes, bends, weld_m, panels, tol_k, surf_k)
-    st.success("Routing gegenereerd – bewerk ‘m hieronder naar wens.")
-    st.rerun()
-
 # =============================
-# Presets & JSON
+# Presets & JSON (init state)
 # =============================
-st.markdown("## 📂 Presets & JSON")
-st.caption("Bewaar of laad routing/BOM configuraties")
-
-# init defaults in state (data, niet widget)
 if "routing_df" not in st.session_state:
     st.session_state["routing_df"] = pd.DataFrame([
         {"Step":10,"Proces":"Casting","Qty_per_parent":1.0,"Cycle_min":2.0,"Setup_min":60.0,"Attend_pct":50,
@@ -483,6 +525,16 @@ if "bom_buy_df" not in st.session_state:
         {"Part":"Schroef M8","Qty":8,"UnitPrice":0.1,"Scrap_pct":0.02}
     ])
 
+# Autorouting knop
+if st.button("🔮 Genereer routing"):
+    yfac = float(materials[material].get("yield", 1.0))
+    bruto_kg_pc = gewicht / yfac
+    st.session_state["routing_df"] = generate_autorouting(part_type, bruto_kg_pc, holes, bends, weld_m, panels, tol_k, surf_k)
+    st.success("Routing gegenereerd – bewerk ‘m hieronder naar wens.")
+    st.rerun()
+
+# Presets opslaan / laden (lokaal)
+st.markdown("## 📂 Presets & JSON")
 preset_col1, preset_col2 = st.columns(2)
 with preset_col1:
     if st.button("💾 Save preset (JSON)"):
@@ -494,7 +546,6 @@ with preset_col1:
         b64 = base64.b64encode(js.encode()).decode()
         st.markdown(f'<a href="data:application/json;base64,{b64}" download="preset.json">Download preset.json</a>',
                     unsafe_allow_html=True)
-
 with preset_col2:
     uploaded = st.file_uploader("Upload JSON preset", type="json")
     if uploaded:
@@ -506,35 +557,71 @@ with preset_col2:
         except Exception as e:
             st.error(f"Kon JSON niet laden: {e}")
 
-with st.expander("🔗 GitHub presets laden"):
+# GitHub presets – lijst, laden, en voorbeeld pushen
+with st.expander("🔗 GitHub presets laden / aanmaken"):
     owner = st.text_input("GitHub owner", "gerrit0492-create")
     repo = st.text_input("Repository", "maakindustrie-cost-tool")
     folder = st.text_input("Folder", "presets")
-    branch = st.text_input("Branch", "main")
-    token = st.text_input("Token (optioneel)", type="password")
-    if st.button("📂 Lijst presets"):
+    branch_in = st.text_input("Branch (leeg = autodetect)", "")
+    token = st.text_input("Token (alleen nodig voor schrijven of private repo)", type="password")
+
+    cols = st.columns(3)
+    if cols[0].button("📂 Lijst presets"):
         try:
-            files = gh_list_files(owner, repo, folder, branch, token or None)
+            files, used_branch = gh_list_files(owner, repo, folder, branch_in or None, token or None)
             st.session_state["gh_filelist"] = files
-            st.success(f"Gevonden: {[f['name'] for f in files]}")
+            st.info(f"Branch gebruikt: {used_branch}")
+            if not files:
+                st.warning(f"Geen JSON-bestanden in '{folder}'. Maak er één met de knop hieronder.")
+            else:
+                st.success(f"Gevonden: {[f['name'] for f in files]}")
+        except FileNotFoundError as e:
+            st.error(f"{e} — Bestaat repo en heb je toegang?")
+        except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else "?"
+            st.error(f"GitHub HTTP {code}: {getattr(e.response,'text','')}")
         except Exception as e:
-            st.error(f"GitHub error: {e}")
+            st.error(f"Onbekende fout: {e}")
+
     files = st.session_state.get("gh_filelist", [])
     if files:
         names = [f['name'] for f in files]
         sel = st.selectbox("Kies preset", names, key="gh_sel_name")
-        if st.button("Preset laden uit GitHub"):
+        if st.button("⬇️ Preset laden"):
             try:
-                path = f"{folder}/{sel}".strip("/ ")
-                data = gh_fetch_json(owner, repo, path, branch, token or None)
+                path = f"{folder}/{sel}"
+                data = gh_fetch_json(owner, repo, path, branch_in or None, token or None)
                 if "routing" in data: st.session_state["routing_df"] = pd.DataFrame(data["routing"])
                 if "bom_buy" in data: st.session_state["bom_buy_df"] = pd.DataFrame(data["bom_buy"])
-                st.success(f"Preset '{sel}' geladen uit GitHub."); st.rerun()
+                st.success(f"Preset '{sel}' geladen."); st.rerun()
             except Exception as e:
                 st.error(f"Mislukt: {e}")
 
+    st.markdown("---")
+    st.caption("Nog geen presets? Maak een voorbeeldbestand in je repo:")
+    colm = st.columns(2)
+    if colm[0].button("🆕 Push voorbeeldpreset naar repo"):
+        try:
+            preset = {
+                "routing": pd.DataFrame(st.session_state["routing_df"]).to_dict(orient="records"),
+                "bom_buy": pd.DataFrame(st.session_state["bom_buy_df"]).to_dict(orient="records"),
+            }
+            js = json.dumps(preset, indent=2).encode("utf-8")
+            _ = gh_put_file(
+                owner, repo, branch_in or None,
+                path=f"{folder.strip('/')}/preset_example.json",
+                content_bytes=js,
+                message="Add preset_example.json via app",
+                token=token or ""
+            )
+            st.success("Voorbeeldpreset gepusht naar GitHub. Klik daarna op '📂 Lijst presets'.")
+        except PermissionError as e:
+            st.error(f"{e} — Gebruik een Personal Access Token met 'repo' scope.")
+        except Exception as e:
+            st.error(f"Push mislukt: {e}")
+
 # =============================
-# ROUTING (BOM-stappen) – editor
+# ROUTING – editor (zonder widget-key writes)
 # =============================
 st.markdown(f"## {tr('routing_hdr', lang_choice)}")
 st.caption(tr("routing_cap", lang_choice))
@@ -548,7 +635,6 @@ routing_view = st.data_editor(
         "Proces": st.column_config.SelectboxColumn(options=process_choices, required=True),
     }
 )
-# update data (geen widget-key!)
 st.session_state["routing_df"] = pd.DataFrame(routing_view)
 
 # =============================
@@ -565,7 +651,7 @@ bom_view = st.data_editor(
 st.session_state["bom_buy_df"] = pd.DataFrame(bom_view)
 
 # =============================
-# Kostencalculatie
+# Kostencalculatie (basis)
 # =============================
 st.markdown("---")
 st.subheader("📊 Kostencalculatie (basis)")
@@ -642,6 +728,33 @@ else:
     st.warning(f"🔧 Bottleneck: **{bottleneck['Proces']}** – benutting ~ {(bottleneck['Util_pct']*100):.1f}%")
 
 # =============================
+# Make vs Buy – automatisch advies
+# =============================
+st.markdown("### 🔄 Make vs Buy")
+if Q >= moq:
+    buy_unit = buy_price + transport_buy
+else:
+    buy_unit = (buy_price * moq) / Q + transport_buy
+
+capacity_penalty = 0.0
+if not cap_df.empty and cap_df["Util_pct"].max() > 1.0:
+    overload = float(cap_df["Util_pct"].max() - 1.0)
+    capacity_penalty = overload * 0.10 * total_cost  # 10% * overbelasting
+
+make_unit = total_cost + capacity_penalty
+adv = "BUY" if buy_unit < make_unit else "MAKE"
+delta = abs(make_unit - buy_unit)
+
+c1, c2, c3 = st.columns(3)
+c1.metric("Make €/stuk", f"€ {make_unit:.2f}")
+c2.metric("Buy €/stuk", f"€ {buy_unit:.2f}")
+c3.metric("Advies", adv)
+if adv=="BUY":
+    st.info(f"Inkoop is ~€ {delta:.2f}/stuk voordeliger bij Q={Q} (inclusief MOQ/transport en capaciteitsdruk).")
+else:
+    st.success(f"Zelf maken is ~€ {delta:.2f}/stuk voordeliger bij Q={Q} (capaciteit meegewogen).")
+
+# =============================
 # Export naar PDF en Excel
 # =============================
 st.subheader("📤 Export opties")
@@ -660,7 +773,7 @@ with exp_col1:
                 ["Conversie", f"{conv_cost:.2f}"],
                 ["Inkoopdelen", f"{buy_cost:.2f}"],
                 ["Totaal", f"{total_cost:.2f}"],
-                ["Verkoop (incl. marge)", f"{sales_price:.2f}"]]
+                ["Verkoop (incl. marge)", f"{(total_cost*(1+profit_pct+contingency_pct)):.2f}"]]
         table = Table(data, colWidths=[200,100])
         style = TableStyle([("BACKGROUND",(0,0),(-1,0),colors.grey),
                             ("TEXTCOLOR",(0,0),(-1,0),colors.whitesmoke),
@@ -682,7 +795,7 @@ with exp_col2:
             {"Post":"Conversie","Bedrag":conv_cost},
             {"Post":"Inkoopdelen","Bedrag":buy_cost},
             {"Post":"Totaal","Bedrag":total_cost},
-            {"Post":"Verkoop (incl. marge)","Bedrag":sales_price}
+            {"Post":"Verkoop (incl. marge)","Bedrag":total_cost*(1+profit_pct+contingency_pct)}
         ]).to_excel(writer, index=False, sheet_name="Summary")
         if isinstance(samples, np.ndarray):
             pd.DataFrame({"Kostprijs/stuk": samples}).to_excel(writer, index=False, sheet_name="MC_samples")
@@ -698,4 +811,4 @@ with exp_col2:
 # =============================
 # Einde app
 # =============================
-st.markdown("✅ Klaar – dit is de huidige versie van de Maakindustrie Cost Tool+.")
+st.markdown("✅ Klaar – alle fixes actief (GitHub 404 afgevangen, authoring/push-optie, MC, WIP, Make-vs-Buy).")
